@@ -2,4 +2,4 @@ streamlit
 duckdb
 pandas
 plotly
-openpyxl
+pyarrow
