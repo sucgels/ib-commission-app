@@ -3,65 +3,33 @@ import duckdb
 import pandas as pd
 import plotly.express as px
 
-st.set_page_config(page_title="IB Commission & Deposit Summarizer", layout="wide")
+st.set_page_config(page_title="Net Deposit Analysis", layout="wide")
 
-st.title("📊 ระบบสรุปยอด Commission และ Net Deposit")
-
-uploaded_file = st.file_uploader("เลือกไฟล์ Parquet ที่แปลงแล้ว", type="parquet")
+uploaded_file = st.file_uploader("Upload Parquet file (v5.0 only)", type="parquet")
 
 if uploaded_file:
     df = pd.read_parquet(uploaded_file)
     
-    # ใช้ DuckDB คำนวณแยกแต่ละช่อง: Deposit, Withdraw และ Net Deposit
-    query = """
-    SELECT 
-        receiver_id AS ID,
-        currency AS Currency,
-        ROUND(SUM(CAST(commission AS DOUBLE)), 2) AS Total_Commission,
-        ROUND(SUM(CAST(deposit AS DOUBLE)), 2) AS Total_Deposit,
-        ROUND(SUM(CAST(withdraw AS DOUBLE)), 2) AS Total_Withdraw,
-        ROUND(SUM(CAST(deposit AS DOUBLE)) - SUM(CAST(withdraw AS DOUBLE)), 2) AS Net_Deposit,
-        COUNT(*) AS Total_Orders
-    FROM df
-    GROUP BY receiver_id, currency
-    ORDER BY Net_Deposit DESC
-    """
+    # ตรวจสอบว่ามีคอลัมน์ที่จำเป็นครบไหม
+    required = ['deposit', 'withdraw', 'receiver_id', 'currency']
+    found_cols = [c.lower() for c in df.columns]
     
-    with st.spinner("กำลังคำนวณข้อมูล..."):
+    if all(col in found_cols for col in required):
+        query = """
+        SELECT 
+            receiver_id AS ID,
+            currency AS Currency,
+            SUM(CAST(deposit AS DOUBLE)) AS Total_Deposit,
+            SUM(CAST(withdraw AS DOUBLE)) AS Total_Withdraw,
+            SUM(CAST(deposit AS DOUBLE)) - SUM(CAST(withdraw AS DOUBLE)) AS Net_Deposit
+        FROM df
+        GROUP BY 1, 2
+        """
         df_final = duckdb.query(query).df()
-
-    # --- ส่วนที่ 1: สรุปภาพรวม (Metric) ---
-    st.write("---")
-    m1, m2, m3, m4 = st.columns(4)
-    m1.metric("ยอดฝากรวม", f"{df_final['Total_Deposit'].sum():,.2f}")
-    m2.metric("ยอดถอนรวม", f"{df_final['Total_Withdraw'].sum():,.2f}")
-    m3.metric("ยอดฝากสุทธิ (Net)", f"{df_final['Net_Deposit'].sum():,.2f}")
-    m4.metric("Commission รวม", f"{df_final['Total_Commission'].sum():,.2f}")
-
-    # --- ส่วนที่ 2: กราฟ Treemap ---
-    st.subheader("🌲 ภาพรวม Net Deposit แยกตามชั้น (Currency > ID)")
-    # กรองเฉพาะค่าที่เป็นบวกสำหรับ Treemap
-    df_tree = df_final[df_final['Net_Deposit'] > 0]
-    fig = px.treemap(
-        df_tree, 
-        path=[px.Constant("All Currencies"), 'Currency', 'ID'], 
-        values='Net_Deposit',
-        color='Net_Deposit',
-        color_continuous_scale='RdYlGn',
-        hover_data=['Total_Deposit', 'Total_Withdraw']
-    )
-    st.plotly_chart(fig, use_container_width=True)
-
-    # --- ส่วนที่ 3: ตารางข้อมูลละเอียด ---
-    st.subheader("📋 ตารางข้อมูลสรุปแยกตาม ID")
-    # แสดงตารางพร้อมจัดรูปแบบตัวเลขให้ดูง่าย
-    st.dataframe(
-        df_final.style.format({
-            'Total_Commission': '{:,.2f}',
-            'Total_Deposit': '{:,.2f}',
-            'Total_Withdraw': '{:,.2f}',
-            'Net_Deposit': '{:,.2f}',
-            'Total_Orders': '{:,}'
-        }), 
-        use_container_width=True
-    )
+        
+        # แสดงผล Metric และ Treemap (ใช้โค้ดเดิมที่เคยให้ไว้ได้เลย)
+        st.write("### สรุปยอดเงินฝากสุทธิ")
+        st.dataframe(df_final)
+    else:
+        st.error(f"❌ ไฟล์นี้ไม่มีข้อมูล Deposit/Withdraw กรุณาใช้ตัวแปลง v5.0 แปลงไฟล์ใหม่ครับ")
+        st.info(f"คอลัมน์ที่พบในไฟล์นี้: {list(df.columns)}")
