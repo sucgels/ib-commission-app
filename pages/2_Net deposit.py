@@ -38,12 +38,31 @@ if uploaded_file:
         mask = mask & df_final['ID'].str.contains(search_id)
     df_filtered = df_final[mask].sort_values(by='Commission' if not has_finance else 'Net_Deposit', ascending=False)
 
-    # --- ส่วนที่ 2: สรุปยอดรวม (Metrics) ---
-    m1, m2, m3 = st.columns(3)
-    m1.metric("จำนวน ID ทั้งหมด", f"{len(df_filtered):,}")
-    m2.metric("ยอด Commission รวม", f"{df_filtered['Commission'].sum():,.2f}")
-    if has_finance:
-        m3.metric("ยอด Net Deposit รวม", f"{df_filtered['Net_Deposit'].sum():,.2f}")
+    # --- ส่วนที่ 2: สรุปยอดรวมแยกตามสกุลเงิน (Metrics) ---
+    st.write("### 💰 สรุปยอดรวมแยกตามสกุลเงิน")
+    
+    # คำนวณยอดรวมแยกตาม Currency
+    summary_by_curr = df_filtered.groupby('Currency').agg({
+        'ID': 'count',
+        'Commission': 'sum',
+        'Deposit': 'sum',
+        'Withdraw': 'sum',
+        'Net_Deposit': 'sum'
+    }).reset_index()
+
+    # สร้างแถว Metrics สำหรับแต่ละสกุลเงิน
+    for index, row in summary_by_curr.iterrows():
+        st.subheader(f"💵 สกุลเงิน: {row['Currency']}")
+        col1, col2, col3, col4 = st.columns(4)
+        
+        col1.metric("จำนวน ID", f"{row['ID']:,}")
+        col2.metric("Commission รวม", f"{row['Commission']:,.2f}")
+        
+        if has_finance:
+            col3.metric("Net Deposit รวม", f"{row['Net_Deposit']:,.2f}")
+            col4.metric("ฝาก/ถอน (รวม)", f"{row['Deposit']:,.0f} / {row['Withdraw']:,.0f}")
+        
+        st.write("---") # เส้นคั่นระหว่างสกุลเงิน
 
     # --- ส่วนที่ 3: กราฟเปรียบเทียบ (Visuals) ---
     tab1, tab2 = st.tabs(["📊 กราฟแท่ง (ดูง่ายสุด)", "🌲 Treemap (ดูภาพรวม)"])
@@ -64,3 +83,4 @@ if uploaded_file:
     # --- ส่วนที่ 4: ตารางละเอียด ---
     st.subheader("📋 รายละเอียดข้อมูลแบบตาราง")
     st.dataframe(df_filtered, use_container_width=True)
+
