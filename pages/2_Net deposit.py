@@ -3,77 +3,64 @@ import duckdb
 import pandas as pd
 import plotly.express as px
 
-st.set_page_config(page_title="Multi-Analysis Dashboard", layout="wide")
+st.set_page_config(page_title="Data Analysis Dashboard", layout="wide")
 
-st.title("📊 ระบบวิเคราะห์ข้อมูลอัจฉริยะ")
+st.title("📊 ระบบวิเคราะห์ข้อมูลเชิงลึก")
 
-uploaded_file = st.file_uploader("อัปโหลดไฟล์ Parquet (รองรับทั้งแบบมีและไม่มียอดฝาก-ถอน)", type="parquet")
+uploaded_file = st.file_uploader("อัปโหลดไฟล์ Parquet", type="parquet")
 
 if uploaded_file:
     df = pd.read_parquet(uploaded_file)
     cols = [c.lower() for c in df.columns]
-    
-    # ตรวจสอบสถานะข้อมูล
     has_finance = 'deposit' in cols and 'withdraw' in cols
-    has_commission = 'commission' in cols
-
-    # --- ส่วนการประมวลผลข้อมูล ---
-    if has_finance:
-        # กรณีมีข้อมูลการเงินครบ
-        query = """
-        SELECT 
-            receiver_id AS ID,
-            currency AS Currency,
-            SUM(CAST(commission AS DOUBLE)) AS Total_Commission,
-            SUM(CAST(deposit AS DOUBLE)) AS Total_Deposit,
-            SUM(CAST(withdraw AS DOUBLE)) AS Total_Withdraw,
-            (SUM(CAST(deposit AS DOUBLE)) - SUM(CAST(withdraw AS DOUBLE))) AS Net_Deposit
-        FROM df
-        GROUP BY 1, 2
-        """
-        title_text = "Net Deposit Distribution"
-        value_col = "Net_Deposit"
-        color_scale = 'RdYlGn' # เขียว-เหลือง-แดง
-    else:
-        # กรณีมีแค่ Commission
-        query = """
-        SELECT 
-            receiver_id AS ID,
-            currency AS Currency,
-            SUM(CAST(commission AS DOUBLE)) AS Total_Commission
-        FROM df
-        GROUP BY 1, 2
-        """
-        title_text = "Commission Distribution (No Deposit Data)"
-        value_col = "Total_Commission"
-        color_scale = 'Blues' # สีฟ้า
-
+    
+    # --- ประมวลผลข้อมูลหลัก ---
+    query = """
+    SELECT 
+        receiver_id AS ID,
+        currency AS Currency,
+        SUM(CAST(commission AS DOUBLE)) AS Commission,
+        {finance_cols}
+    FROM df
+    GROUP BY 1, 2
+    """.format(finance_cols="SUM(CAST(deposit AS DOUBLE)) AS Deposit, SUM(CAST(withdraw AS DOUBLE)) AS Withdraw, (SUM(CAST(deposit AS DOUBLE)) - SUM(CAST(withdraw AS DOUBLE))) AS Net_Deposit" if has_finance else "0 AS Deposit, 0 AS Withdraw, 0 AS Net_Deposit")
+    
     df_final = duckdb.query(query).df()
-
-    # --- แสดงผลหน้าเว็บ ---
-    st.write(f"### 🌲 {title_text}")
     
-    # วาด Treemap (กรองค่าที่มากกว่า 0 เพื่อไม่ให้กราฟ Error)
-    df_tree = df_final[df_final[value_col] > 0]
+    # --- ส่วนที่ 1: ตัวกรองและค้นหา (Filters) ---
+    st.sidebar.header("🔍 ตัวกรองข้อมูล")
+    search_id = st.sidebar.text_input("ค้นหา ID ที่ต้องการ")
+    selected_currency = st.sidebar.multiselect("เลือกสกุลเงิน", options=df_final['Currency'].unique(), default=df_final['Currency'].unique())
     
-    if not df_tree.empty:
-        fig = px.treemap(
-            df_tree, 
-            path=['Currency', 'ID'], 
-            values=value_col,
-            color=value_col,
-            color_continuous_scale=color_scale,
-            title=f"วิเคราะห์ตามยอด {value_col}"
-        )
-        st.plotly_chart(fig, use_container_width=True)
-    else:
-        st.warning("⚠️ ข้อมูลในคอลัมน์หลักเป็น 0 หรือติดลบ ไม่สามารถวาด Treemap ได้")
+    # กรองข้อมูลตามที่เลือก
+    mask = df_final['Currency'].isin(selected_currency)
+    if search_id:
+        mask = mask & df_final['ID'].str.contains(search_id)
+    df_filtered = df_final[mask].sort_values(by='Commission' if not has_finance else 'Net_Deposit', ascending=False)
 
-    # --- ตารางข้อมูลสรุป ---
-    st.write("### 📋 ตารางสรุปข้อมูลทั้งหมด")
-    st.dataframe(df_final.style.format(precision=2), use_container_width=True)
+    # --- ส่วนที่ 2: สรุปยอดรวม (Metrics) ---
+    m1, m2, m3 = st.columns(3)
+    m1.metric("จำนวน ID ทั้งหมด", f"{len(df_filtered):,}")
+    m2.metric("ยอด Commission รวม", f"{df_filtered['Commission'].sum():,.2f}")
+    if has_finance:
+        m3.metric("ยอด Net Deposit รวม", f"{df_filtered['Net_Deposit'].sum():,.2f}")
 
-    # ปุ่มขยายดูโครงสร้างไฟล์
-    with st.expander("🔍 ดูข้อมูลดิบและคอลัมน์ที่ตรวจพบ"):
-        st.write("Columns found:", list(df.columns))
-        st.write(df.head(5))
+    # --- ส่วนที่ 3: กราฟเปรียบเทียบ (Visuals) ---
+    tab1, tab2 = st.tabs(["📊 กราฟแท่ง (ดูง่ายสุด)", "🌲 Treemap (ดูภาพรวม)"])
+    
+    with tab1:
+        # แสดง Top 20 เพื่อไม่ให้กราฟแน่นเกินไป
+        val_col = 'Net_Deposit' if has_finance else 'Commission'
+        fig_bar = px.bar(df_filtered.head(20), x='ID', y=val_col, color='Currency',
+                         text_auto='.2s', title=f"Top 20 IDs by {val_col}")
+        st.plotly_chart(fig_bar, use_container_width=True)
+
+    with tab2:
+        df_tree = df_filtered[df_filtered[val_col] > 0]
+        fig_tree = px.treemap(df_tree, path=['Currency', 'ID'], values=val_col, color=val_col,
+                              color_continuous_scale='Blues' if not has_finance else 'RdYlGn')
+        st.plotly_chart(fig_tree, use_container_width=True)
+
+    # --- ส่วนที่ 4: ตารางละเอียด ---
+    st.subheader("📋 รายละเอียดข้อมูลแบบตาราง")
+    st.dataframe(df_filtered, use_container_width=True)
