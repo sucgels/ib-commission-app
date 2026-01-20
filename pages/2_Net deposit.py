@@ -5,20 +5,20 @@ import plotly.express as px
 
 st.set_page_config(page_title="Financial Dashboard", layout="wide")
 
-st.title("📊 ระบบสรุปยอดธุรกรรมอัจฉริยะ")
+st.title("📊 ระบบสรุปยอดธุรกรรมและค่าคอมมิชชัน")
 
-uploaded_file = st.file_uploader("อัปโหลดไฟล์ Parquet (รองรับทั้งไฟล์ธุรกรรมและคอมมิชชัน)", type="parquet")
+uploaded_file = st.file_uploader("อัปโหลดไฟล์ Parquet", type="parquet")
 
 if uploaded_file:
-    # 1. อ่านไฟล์และล้างชื่อคอลัมน์ (หัวใจสำคัญเพื่อแก้ Error)
+    # 1. อ่านไฟล์และล้างชื่อคอลัมน์ (ตัดช่องว่าง + ตัวพิมพ์เล็ก)
     df = pd.read_parquet(uploaded_file)
     df.columns = [str(c).strip().lower() for c in df.columns]
     cols = list(df.columns)
 
-    # 2. ระบบตรวจจับรูปแบบไฟล์ (Auto-Detection)
+    # 2. ตรวจสอบประเภทไฟล์อัตโนมัติ (หัวใจสำคัญเพื่อแก้ Error)
     if 'user id' in cols and 'amount' in cols:
         st.success("✅ ตรวจพบ: รายงานธุรกรรมรายวัน (Transaction Report)")
-        # ใช้เครื่องหมาย " " ครอบ user id เพราะมีช่องว่าง
+        # ใช้ " " ครอบ user id เพราะชื่อมีช่องว่าง
         query = """
         SELECT 
             "user id" AS ID,
@@ -30,29 +30,28 @@ if uploaded_file:
         GROUP BY 1, 2
         """
     elif 'receiver_id' in cols:
-        st.success("✅ ตรวจพบ: รายงานคอมมิชชัน (IB Commission)")
-        has_fin = 'deposit' in cols and 'withdraw' in cols
-        query = f"""
+        st.success("✅ ตรวจพบ: รายงานคอมมิชชัน (IB Report)")
+        query = """
         SELECT 
             receiver_id AS ID,
             currency AS Currency,
             SUM(CAST(commission AS DOUBLE)) AS Commission,
-            {"SUM(CAST(deposit AS DOUBLE))" if has_fin else "0.0"} AS Deposit,
-            {"SUM(CAST(withdraw AS DOUBLE))" if has_fin else "0.0"} AS Withdraw
+            SUM(CAST(deposit AS DOUBLE)) AS Deposit,
+            SUM(CAST(withdraw AS DOUBLE)) AS Withdraw
         FROM df
         GROUP BY 1, 2
         """
     else:
         st.error("❌ ไม่รองรับรูปแบบไฟล์นี้")
-        st.info(f"คอลัมน์ที่ตรวจพบในไฟล์: {cols}")
+        st.info(f"คอลัมน์ที่ระบบตรวจพบในไฟล์ของคุณ: {cols}")
         st.stop()
 
-    # 3. ประมวลผลข้อมูล
+    # 3. ประมวลผลและแยกยอดสรุป USC / USD (ตามที่คุณต้องการ)
     df_final = duckdb.query(query).df()
     df_final['Net_Deposit'] = df_final['Deposit'] - df_final['Withdraw']
 
-    # 4. แสดงผลแยก USD / USC (ตามที่คุณต้องการ)
-    st.write("### 💰 สรุปยอดรวมแยกตามสกุลเงิน")
+    st.write("### 💰 ยอดรวมแยกตามสกุลเงิน")
+    # วนลูปสร้างกล่อง Metric แยกตามสกุลเงินที่มีในไฟล์
     for curr in sorted(df_final['Currency'].unique()):
         df_curr = df_final[df_final['Currency'] == curr]
         with st.container():
@@ -64,11 +63,11 @@ if uploaded_file:
             c4.metric("ยอดถอน", f"{df_curr['Withdraw'].sum():,.2f}")
             st.write("---")
 
-    # 5. กราฟและการแสดงผล
+    # 4. กราฟและการแสดงผล
     tab1, tab2 = st.tabs(["📊 Top 20 Net Deposit", "📋 ตารางข้อมูล"])
     with tab1:
         top_20 = df_final.sort_values('Net_Deposit', ascending=False).head(20)
-        fig = px.bar(top_20, x='ID', y='Net_Deposit', color='Currency', text_auto='.2s', barmode='group')
+        fig = px.bar(top_20, x='ID', y='Net_Deposit', color='Currency', text_auto='.2s')
         st.plotly_chart(fig, use_container_width=True)
     with tab2:
         st.dataframe(df_final, use_container_width=True)
