@@ -1,77 +1,55 @@
-import streamlit as st
-import duckdb
 import pandas as pd
-import plotly.express as px
+import glob
 
-st.set_page_config(page_title="Financial Dashboard", layout="wide")
-st.title("📊 ระบบสรุปยอดอัจฉริยะ (V8.0)")
+# 1. ค้นหาไฟล์ Excel
+file_path = "Summary_Final_Commission.xlsx"
 
-uploaded_file = st.file_uploader("อัปโหลดไฟล์ Parquet", type="parquet")
+try:
+    # 2. อ่านไฟล์
+    df = pd.read_excel(file_path, engine='openpyxl')
 
-if uploaded_file:
-    df = pd.read_parquet(uploaded_file)
-    # ล้างชื่อคอลัมน์ให้เหลือแต่ตัวอักษรเล็กและไม่มีช่องว่าง
-    df.columns = [str(c).strip().lower() for c in df.columns]
-    cols = list(df.columns)
+    # 3. ล้างช่องว่างที่หัวตารางทิ้งให้หมด (แก้ปัญหา 'Volume ' ไม่เท่ากับ 'Volume')
+    df.columns = df.columns.astype(str).str.strip()
+    
+    # พิมพ์ชื่อคอลัมน์ออกมาเช็คเพื่อความชัวร์ (จะเห็นในหน้าจอตอนรัน)
+    print(f"✅ ตรวจพบคอลัมน์: {list(df.columns)}")
 
-    # ฟังก์ชันช่วยหาคอลัมน์ที่ใกล้เคียงที่สุด
-    def find_col(targets, current_cols):
-        for t in targets:
-            for c in current_cols:
-                if t in c: return c
-        return None
+    # 4. กำหนดชื่อคอลัมน์ (ใช้ Volume ตัว e ตามที่คุณยืนยัน)
+    # หมายเหตุ: ถ้าคอลัมน์ชื่อ Referrer ของคุณสะกดเป็น Referral ให้แก้บรรทัดนี้ครับ
+    vol_col = 'Volume'
+    sym_col = 'Symbol'
+    name_col = 'Name'
+    ref_col = 'Referrer' 
 
-    # ค้นหาคอลัมน์สำคัญ
-    col_id = find_col(['user id', 'receiver_id', 'id'], cols)
-    col_type = find_col(['type'], cols)
-    col_amount = find_col(['amount'], cols)
-    col_curr = find_col(['currency'], cols)
-    col_comm = find_col(['commission'], cols)
+    # 5. คำนวณตามเงื่อนไข
+    # แปลง Volume ให้เป็นตัวเลข (ถ้ามีค่าว่างให้เป็น 0)
+    df['Final_Vol'] = pd.to_numeric(df[vol_col], errors='coerce').fillna(0)
+    
+    # เงื่อนไข: .c หาร 100 | .s และ .p ไม่ต้องหาร
+    is_c = df[sym_col].astype(str).str.strip().str.endswith('.c')
+    df.loc[is_c, 'Final_Vol'] = df.loc[is_c, 'Final_Vol'] / 100
 
-    if col_id and col_amount:
-        st.success(f"✅ ตรวจพบข้อมูล: ID({col_id}), Amount({col_amount})")
-        
-        # จัดการชื่อคอลัมน์ให้ SQL อ่านง่าย
-        df_temp = df.copy()
-        df_temp = df_temp.rename(columns={col_id: 'target_id', col_amount: 'target_amt', col_curr: 'target_curr'})
-        if col_type: df_temp = df_temp.rename(columns={col_type: 'target_type'})
-        if col_comm: df_temp = df_temp.rename(columns={col_comm: 'target_comm'})
+    # 6. รวมยอด (Group By)
+    # ตรวจสอบว่ามีคอลัมน์ Referrer/Referral ไหม
+    actual_ref_col = ref_col if ref_col in df.columns else (
+        'Referral' if 'Referral' in df.columns else None
+    )
 
-        # เขียน SQL แบบยืดหยุ่น
-        query = """
-        SELECT 
-            target_id AS ID,
-            target_curr AS Currency,
-            SUM(CASE WHEN lower(CAST(target_type AS VARCHAR)) LIKE '%deposit%' THEN CAST(target_amt AS DOUBLE) ELSE 0 END) AS Deposit,
-            SUM(CASE WHEN lower(CAST(target_type AS VARCHAR)) LIKE '%withdraw%' THEN ABS(CAST(target_amt AS DOUBLE)) ELSE 0 END) AS Withdraw,
-            SUM(CASE WHEN 'target_comm' IN (SELECT column_name FROM (SELECT * FROM df_temp LIMIT 0)) THEN CAST(target_comm AS DOUBLE) ELSE 0 END) AS Commission
-        FROM df_temp
-        GROUP BY 1, 2
-        """
-        
-        df_final = duckdb.query(query).df()
-        df_final['Net_Deposit'] = df_final['Deposit'] - df_final['Withdraw']
-
-        # --- แสดง Metrics แยก USD/USC ---
-        st.write("### 💰 ยอดรวมแยกตามสกุลเงิน")
-        for curr in sorted(df_final['Currency'].unique()):
-            df_curr = df_final[df_final['Currency'] == curr]
-            with st.container():
-                st.markdown(f"#### 💵 สกุลเงิน: {curr}")
-                c1, c2, c3 = st.columns(3)
-                c1.metric("จำนวน ID", f"{len(df_curr):,}")
-                c2.metric("Net Deposit รวม", f"{df_curr['Net_Deposit'].sum():,.2f}")
-                c3.metric("ฝาก / ถอน", f"{df_curr['Deposit'].sum():,.0f} / {df_curr['Withdraw'].sum():,.0f}")
-                st.write("---")
-
-        # กราฟแท่ง
-        st.write("### 📊 Top 20 Net Deposit")
-        fig = px.bar(df_final.sort_values('Net_Deposit', ascending=False).head(20), 
-                     x='ID', y='Net_Deposit', color='Currency', text_auto='.2s')
-        st.plotly_chart(fig, use_container_width=True)
-        
-        st.write("### 📋 ตารางข้อมูลสรุป")
-        st.dataframe(df_final, use_container_width=True)
+    if actual_ref_col:
+        summary = df.groupby([name_col, actual_ref_col], as_index=False)['Final_Vol'].sum()
     else:
-        st.error("❌ หาคอลัมน์ ID หรือ Amount ไม่เจอ")
-        st.info(f"คอลัมน์ที่มีในไฟล์: {cols}")
+        summary = df.groupby([name_col], as_index=False)['Final_Vol'].sum()
+
+    # 7. ปัดเศษทศนิยม 4 ตำแหน่ง
+    summary['Final_Vol'] = summary['Final_Vol'].round(4)
+
+    # 8. แสดงผลและบันทึก
+    print("\n--- สรุปยอด Volume เสร็จเรียบร้อย ---")
+    print(summary)
+    
+    output_file = "Summary_Volume_Final.xlsx"
+    summary.to_excel(output_file, index=False)
+    print(f"\n💾 บันทึกไฟล์สำเร็จ: {output_file}")
+
+except Exception as e:
+    print(f"❌ เกิดข้อผิดพลาด: {e}")
